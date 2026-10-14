@@ -1,0 +1,288 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { getAuditData } from "@api/apiMethods/detailpageApiMethod";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { toast } from "react-toastify";
+import {
+  isEmpty,
+  isNumber,
+  millisecondsToTime,
+  serverError
+} from "@utils/Utils";
+import { TableLayout } from "@components/Table/TableLayout";
+import { dateFormat } from "@utils/Utils";
+import { Grid, Stack, Typography } from "@mui/material";
+import { ColumnDef } from "@tanstack/react-table";
+import { AuditTableType } from "@models/entityDetailType";
+import moment from "moment";
+import AuditResults from "./AuditResults";
+import { CustomButton } from "@components/muiComponents";
+import AuditFilters from "./AuditsFilter/AuditFilters";
+import KeyboardArrowRightOutlinedIcon from "@mui/icons-material/KeyboardArrowRightOutlined";
+import KeyboardArrowDownOutlinedIcon from "@mui/icons-material/KeyboardArrowDownOutlined";
+
+const AdminAuditTable = () => {
+  const toastId: any = useRef(null);
+  const [loader, setLoader] = useState<boolean>(true);
+  const [auditData, setAuditData] = useState([]);
+  const [updateTable, setupdateTable] = useState(moment.now());
+  const [queryApiObj, setQueryApiObj] = useState({});
+  const [filtersPopover, setFiltersPopover] =
+    useState<HTMLButtonElement | null>(null);
+  const filtersOpen = Boolean(filtersPopover);
+  const popoverId = filtersOpen ? "simple-popover" : undefined;
+
+  const fetchAuditResult = useCallback(
+    async ({ pagination }: { pagination?: any }) => {
+      const { pageSize, pageIndex } = pagination || {};
+      // Derive strictly from table state to avoid URL race conditions
+      const limit = pageSize || 25;
+      const offset = (pageIndex || 0) * limit;
+
+      let auditFilters = !isEmpty(queryApiObj) ? JSON.parse(JSON.stringify(queryApiObj)) : null;
+
+      if (auditFilters) {
+        const filtersStr = JSON.stringify(auditFilters);
+        if (filtersStr.includes('"attributeName":"runId"')) {
+          // Remove any existing auditRowKind to prevent duplicates/conflicts
+          const removeAuditRowKind = (node: Record<string, any>) => {
+            if (node && node.criterion) {
+              node.criterion = node.criterion.filter((c: Record<string, any>) => c.attributeName !== 'auditRowKind');
+              node.criterion.forEach(removeAuditRowKind);
+            }
+          };
+          removeAuditRowKind(auditFilters);
+
+          // Force append SUMMARY by wrapping the existing filter
+          auditFilters = {
+            condition: "AND",
+            criterion: [
+              auditFilters,
+              { attributeName: "auditRowKind", operator: "eq", attributeValue: "SUMMARY" }
+            ]
+          };
+        }
+      }
+
+      let params: Record<string, unknown> = {
+        auditFilters: auditFilters,
+        limit: limit,
+        sortOrder: "DESCENDING",
+        offset: offset,
+        sortBy: "startTime"
+      };
+
+      try {
+        setLoader(true);
+        let searchResp = await getAuditData(params);
+        setAuditData(searchResp.data || []);
+        setLoader(false);
+      } catch (error: unknown) {
+        console.error("Error fetching data:", (error as any)?.response?.data?.errorMessage || (error as any)?.message);
+        toast.dismiss(toastId.current);
+        serverError(error, toastId);
+        setLoader(false);
+      }
+    },
+    [updateTable]
+  );
+
+  const defaultColumns = useMemo<ColumnDef<AuditTableType>[]>(
+    () => [
+      {
+        accessorKey: "userName",
+        cell: (info: any) =>
+          !isEmpty(info.getValue()) ? (
+            <Typography>{info.getValue()}</Typography>
+          ) : (
+            <span>N/A</span>
+          ),
+        header: "Users",
+        enableSorting: true,
+        show: true
+      },
+      {
+        accessorKey: "operation",
+        cell: (info: any) =>
+          !isEmpty(info.getValue()) ? (
+            <Typography>{info.getValue()}</Typography>
+          ) : (
+            <span>N/A</span>
+          ),
+        header: "Operations",
+        enableSorting: true,
+        show: true
+      },
+      {
+        accessorKey: "clientId",
+        cell: (info: any) =>
+          !isEmpty(info.getValue()) ? (
+            <Typography noWrap title={info.getValue()}>
+              {info.getValue()}
+            </Typography>
+          ) : (
+            <span>N/A</span>
+          ),
+        header: "Client ID",
+        enableSorting: true,
+        show: true
+      },
+      {
+        accessorKey: "resultCount",
+        cell: (info: any) =>
+          !isEmpty(info.getValue()) ? (
+            <Typography noWrap>{info.getValue()}</Typography>
+          ) : (
+            <span>N/A</span>
+          ),
+        header: "Result Count",
+        enableSorting: true,
+        show: true
+      },
+      {
+        accessorKey: "startTime",
+        cell: (info: any) =>
+          !isEmpty(info.getValue()) ? (
+            <Typography noWrap>{dateFormat(info.getValue())}</Typography>
+          ) : (
+            <span>N/A</span>
+          ),
+        header: "Start Time",
+        enableSorting: true,
+        show: true
+      },
+      {
+        accessorKey: "endTime",
+        cell: (info: any) =>
+          !isEmpty(info.getValue()) ? (
+            <Typography noWrap>{dateFormat(info.getValue())}</Typography>
+          ) : (
+            <span>N/A</span>
+          ),
+        header: "End Time",
+        enableSorting: true,
+        show: true
+      },
+      {
+        accessorKey: "duration",
+        cell: (info: any) => {
+          const { startTime, endTime } = info.row.original;
+          if (isNumber(parseInt(startTime)) && isNumber(parseInt(endTime))) {
+            let duration = moment.duration(
+              moment(endTime).diff(moment(startTime))
+            );
+
+            return millisecondsToTime(duration);
+          } else {
+            return "N/A";
+          }
+        },
+        header: "Duration",
+        enableSorting: true,
+        show: false
+      }
+    ],
+    []
+  );
+
+  const handleClickFilterPopover = (
+    event: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    setFiltersPopover(event.currentTarget);
+  };
+
+  const handleCloseFilterPopover = () => {
+    setFiltersPopover(null);
+  };
+
+  const defaultColumnVisibility: any = (columns: any) => {
+    let hideColumns: any = {};
+
+    for (let col of columns) {
+      if (col.show == false) {
+        hideColumns[col.accessorKey] = false;
+      }
+    }
+
+    return hideColumns;
+  };
+
+  return (
+    <>
+      <Grid container marginTop={0}>
+        <Grid item md={12} p={2}>
+          <Stack>
+            <TableLayout
+              fetchData={fetchAuditResult}
+              customLeftButton={
+                <CustomButton
+                  variant="outlined"
+                  size="small"
+                  disabled={loader || (isEmpty(auditData) && isEmpty(queryApiObj))}
+                  onClick={handleClickFilterPopover}
+                  startIcon={
+                    !filtersPopover ? (
+                      <KeyboardArrowRightOutlinedIcon />
+                    ) : (
+                      <KeyboardArrowDownOutlinedIcon />
+                    )
+                  }
+                >
+                  Filters
+                </CustomButton>
+              }
+              data={auditData || []}
+              columns={defaultColumns}
+              defaultColumnVisibility={defaultColumnVisibility(defaultColumns)}
+              emptyText="No Records found!"
+              isFetching={loader}
+              columnVisibility={true}
+              clientSideSorting={true}
+              columnSort={true}
+              showPagination={true}
+              showRowSelection={false}
+              tableFilters={true}
+              expandRow={true}
+              auditTableDetails={{
+                Component: AuditResults,
+                componentProps: {
+                  auditData: auditData
+                }
+              }}
+              queryBuilder={false}
+              paginationSummaryVariant="audit"
+            />
+          </Stack>
+        </Grid>
+      </Grid>
+      {filtersOpen && (
+        <AuditFilters
+          popoverId={popoverId}
+          filtersOpen={filtersOpen}
+          filtersPopover={filtersPopover}
+          handleCloseFilterPopover={handleCloseFilterPopover}
+          setupdateTable={setupdateTable}
+          queryApiObj={queryApiObj}
+          setQueryApiObj={setQueryApiObj}
+        />
+      )}
+    </>
+  );
+};
+
+export default AdminAuditTable;

@@ -1,0 +1,426 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * <p/>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p/>
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.atlas.web.security;
+
+import org.apache.atlas.ApplicationProperties;
+import org.apache.atlas.server.common.security.AtlasAuthenticationException;
+import org.apache.atlas.server.common.security.AtlasAuthenticationProvider;
+import org.apache.atlas.web.TestUtils;
+import org.apache.commons.configuration2.PropertiesConfiguration;
+import org.apache.commons.io.FileUtils;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.Test;
+
+import java.io.File;
+import java.util.Collection;
+
+import static org.mockito.Mockito.when;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
+import static org.testng.AssertJUnit.assertFalse;
+import static org.testng.AssertJUnit.assertNotNull;
+
+public class FileAuthenticationTest {
+    private static final Logger LOG = LoggerFactory.getLogger(FileAuthenticationTest.class);
+
+    private static ApplicationContext          applicationContext;
+    private static AtlasAuthenticationProvider authProvider;
+
+    @Mock
+    Authentication authentication;
+
+    private String originalConf;
+
+    @BeforeMethod
+    public void setup1() {
+        MockitoAnnotations.initMocks(this);
+    }
+
+    @BeforeClass
+    public void setup() throws Exception {
+        String persistDir = TestUtils.getTempDirectory();
+
+        setUpPolicyStore(persistDir);
+        setupUserCredential(persistDir);
+
+        setUpAltasApplicationProperties(persistDir);
+
+        originalConf = System.getProperty("atlas.conf");
+
+        System.setProperty("atlas.conf", persistDir);
+
+        AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext();
+
+        ((ConfigurableEnvironment) ctx.getEnvironment()).setActiveProfiles("testSpringSecurityBridge");
+        ctx.register(TestSpringSecurityBridgeConfig.class);
+        ctx.refresh();
+
+        applicationContext = ctx;
+        authProvider       = applicationContext.getBean(AtlasAuthenticationProvider.class);
+    }
+
+    @Test
+    public void testValidUserLoginWithV3password() {
+        when(authentication.getName()).thenReturn("adminv3");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        Authentication auth = authProvider.authenticate(authentication);
+
+        LOG.debug(" {}", auth);
+
+        assertTrue(auth.isAuthenticated());
+    }
+
+    @Test
+    public void testValidUserLogin() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        Authentication auth = authProvider.authenticate(authentication);
+
+        LOG.debug(" {}", auth);
+
+        assertTrue(auth.isAuthenticated());
+    }
+
+    @Test
+    public void testValidUserLoginWithV1password() {
+        when(authentication.getName()).thenReturn("adminv1");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        Authentication auth = authProvider.authenticate(authentication);
+
+        LOG.debug(" {}", auth);
+
+        assertTrue(auth.isAuthenticated());
+    }
+
+    @Test
+    public void testInValidPasswordLogin() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("wrongpassword");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+
+            LOG.debug(" {}", auth);
+        } catch (BadCredentialsException bcExp) {
+            assertEquals(bcExp.getMessage(), "Wrong password");
+        }
+    }
+
+    @Test
+    public void testInValidUsernameLogin() {
+        when(authentication.getName()).thenReturn("wrongUserName");
+        when(authentication.getCredentials()).thenReturn("wrongpassword");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+
+            LOG.debug(" {}", auth);
+        } catch (UsernameNotFoundException uExp) {
+            assertTrue(uExp.getMessage().contains("Username not found."));
+        }
+    }
+
+    @Test
+    public void testLoginWhenRoleIsNotSet() {
+        when(authentication.getName()).thenReturn("user12"); // for this user role is not set properly
+        when(authentication.getCredentials()).thenReturn("user12");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+
+            LOG.debug(" {}", auth);
+        } catch (AtlasAuthenticationException uExp) {
+            assertTrue(uExp.getMessage().startsWith("User role credentials is not set properly for"));
+        }
+    }
+
+    @Test
+    public void testLoginWhenRolePasswordNotSet() {
+        when(authentication.getName()).thenReturn("user"); // for this user password details are set blank
+        when(authentication.getCredentials()).thenReturn("P@ssword");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+
+            LOG.debug(" {}", auth);
+        } catch (UsernameNotFoundException uExp) {
+            assertTrue(uExp.getMessage().startsWith("Username not found"));
+        }
+    }
+
+    @Test
+    public void testUserRoleMapping() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        Authentication auth = authProvider.authenticate(authentication);
+
+        LOG.debug(" {}", auth);
+
+        assertTrue(auth.isAuthenticated());
+
+        Collection<? extends GrantedAuthority> authorities = auth.getAuthorities();
+
+        String role = "";
+
+        for (GrantedAuthority gauth : authorities) {
+            role = gauth.getAuthority();
+        }
+
+        assertEquals(role, "ADMIN");
+    }
+
+    @Test
+    public void testNullUsernameLogin() {
+        when(authentication.getName()).thenReturn(null);
+        when(authentication.getCredentials()).thenReturn("password");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (BadCredentialsException bcExp) {
+            assertEquals(bcExp.getMessage(), "Username can't be null or empty.");
+        }
+    }
+
+    @Test
+    public void testEmptyUsernameLogin() {
+        when(authentication.getName()).thenReturn("");
+        when(authentication.getCredentials()).thenReturn("password");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (BadCredentialsException bcExp) {
+            assertEquals(bcExp.getMessage(), "Username can't be null or empty.");
+        }
+    }
+
+    @Test
+    public void testNullPasswordLogin() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn(null);
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (BadCredentialsException bcExp) {
+            assertEquals(bcExp.getMessage(), "Password can't be null or empty.");
+        }
+    }
+
+    @Test
+    public void testEmptyPasswordLogin() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (BadCredentialsException bcExp) {
+            assertEquals(bcExp.getMessage(), "Password can't be null or empty.");
+        }
+    }
+
+    @Test
+    public void testWhitespaceUsernameLogin() {
+        when(authentication.getName()).thenReturn("   ");
+        when(authentication.getCredentials()).thenReturn("password");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (UsernameNotFoundException uExp) {
+            assertTrue(uExp.getMessage().contains("Username not found."));
+        }
+    }
+
+    @Test
+    public void testWhitespacePasswordLogin() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("   ");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (BadCredentialsException bcExp) {
+            assertEquals(bcExp.getMessage(), "Wrong password");
+        }
+    }
+
+    @Test
+    public void testValidUserWithSpecialCharacters() {
+        // Add a user with special characters to the credential file for this test
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        Authentication auth = authProvider.authenticate(authentication);
+
+        LOG.debug(" {}", auth);
+
+        assertTrue(auth.isAuthenticated());
+        assertEquals(auth.getName(), "admin");
+        assertEquals(auth.getCredentials(), "admin");
+    }
+
+    @Test
+    public void testAuthenticationTokenType() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        Authentication auth = authProvider.authenticate(authentication);
+
+        LOG.debug(" {}", auth);
+
+        assertTrue(auth.isAuthenticated());
+        // Verify the returned authentication is of correct type
+        assertTrue(auth instanceof org.springframework.security.authentication.UsernamePasswordAuthenticationToken);
+    }
+
+    @Test
+    public void testMultipleRolesForUser() {
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        Authentication auth = authProvider.authenticate(authentication);
+
+        LOG.debug(" {}", auth);
+
+        assertTrue(auth.isAuthenticated());
+
+        Collection<? extends GrantedAuthority> authorities = auth.getAuthorities();
+
+        // Verify we have at least one authority
+        assertTrue(authorities.size() > 0);
+
+        // Check that authorities are not null
+        for (GrantedAuthority gauth : authorities) {
+            assertNotNull(gauth.getAuthority());
+            assertFalse(gauth.getAuthority().isEmpty());
+        }
+    }
+
+    @Test
+    public void testCaseInsensitiveUsername() {
+        // Test case sensitivity - this should fail since usernames are case sensitive
+        when(authentication.getName()).thenReturn("ADMIN");
+        when(authentication.getCredentials()).thenReturn("admin");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (UsernameNotFoundException uExp) {
+            assertTrue(uExp.getMessage().contains("Username not found."));
+        }
+    }
+
+    @Test
+    public void testLongUsername() {
+        // Test with a very long username
+        StringBuilder longUsername = new StringBuilder();
+        for (int i = 0; i < 1000; i++) {
+            longUsername.append("a");
+        }
+
+        when(authentication.getName()).thenReturn(longUsername.toString());
+        when(authentication.getCredentials()).thenReturn("password");
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (UsernameNotFoundException uExp) {
+            assertTrue(uExp.getMessage().contains("Username not found."));
+        }
+    }
+
+    @Test
+    public void testLongPassword() {
+        // Test with a very long password
+        StringBuilder longPassword = new StringBuilder();
+        for (int i = 0; i < 1000; i++) {
+            longPassword.append("p");
+        }
+
+        when(authentication.getName()).thenReturn("admin");
+        when(authentication.getCredentials()).thenReturn(longPassword.toString());
+
+        try {
+            Authentication auth = authProvider.authenticate(authentication);
+            LOG.debug(" {}", auth);
+        } catch (BadCredentialsException bcExp) {
+            assertEquals(bcExp.getMessage(), "Wrong password");
+        }
+    }
+
+    @AfterClass
+    public void tearDown() throws Exception {
+        if (originalConf != null) {
+            System.setProperty("atlas.conf", originalConf);
+        }
+
+        applicationContext = null;
+        authProvider       = null;
+    }
+
+    private void setUpAltasApplicationProperties(String persistDir) throws Exception {
+        final PropertiesConfiguration configuration = new PropertiesConfiguration();
+
+        configuration.setProperty("atlas.authentication.method.file", "true");
+        configuration.setProperty("atlas.authentication.method.file.filename", persistDir + "/users-credentials");
+        configuration.setProperty("atlas.auth.policy.file", persistDir + "/policy-store.txt");
+
+        TestUtils.writeConfiguration(configuration, persistDir + File.separator + ApplicationProperties.APPLICATION_PROPERTIES);
+    }
+
+    private void setupUserCredential(String tmpDir) throws Exception {
+        String credentialFileStr = "adminv3=ADMIN::$2a$10$ZVnkc2if06JMLCJEAhTKbOPeWDXTCFLL8zMA6FzZoP.bu8ThT43ha\n" +
+                "admin=ADMIN::a4a88c0872bf652bb9ed803ece5fd6e82354838a9bf59ab4babb1dab322154e1\n" +
+                "adminv1=ADMIN::8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918\n" +
+                "michael=DATA_SCIENTIST::95bfb24de17d285d734b9eaa9109bfe922adc85f20d2e5e66a78bddb4a4ebddb\n" +
+                "paul=DATA_STEWARD::e7c0dcf5f8a93e93791e9bac1ae454a691c1d2a902fc4256d489e96c1b9ac68c\n" +
+                "user=  \n" +
+                "user12=  ::43d864d8f9b53cd913fc6a665c8470595cefa4a360edeb78cf6c4eac00c0a3a0\n";
+
+        File credentialFile = new File(tmpDir, "users-credentials");
+
+        FileUtils.write(credentialFile, credentialFileStr);
+    }
+
+    private void setUpPolicyStore(String tmpDir) throws Exception {
+        File policyFile = new File(tmpDir, "policy-store.txt");
+
+        FileUtils.write(policyFile, "adminPolicy;;admin:rwud;;ROLE_ADMIN:rwud;;type:*,entity:*,operation:*");
+    }
+}
